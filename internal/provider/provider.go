@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -423,7 +424,7 @@ func (p *TechnitiumProvider) Configure(ctx context.Context, req provider.Configu
 			}
 		}
 		resp.Diagnostics.AddError("Unable to connect to Technitium server",
-			fmt.Sprintf("Ping to %s failed: %s", serverURL, err.Error()))
+			pingFailureDetail(serverURL, err, legacyTokenAuth))
 		return
 	}
 
@@ -710,3 +711,20 @@ func (a *providerConfigAccessor) IsUnknown(path string) bool {
 
 // Interface compliance assertion.
 var _ validators.ConfigAccessor = &providerConfigAccessor{}
+
+// pingFailureDetail renders the connectivity-check failure for a diagnostic.
+// A Technitium server older than 15.0 ignores the Authorization: Bearer header
+// the provider sends by default, so every request it receives looks
+// unauthenticated and fails as invalid-token. That error alone reads as a bad
+// token; the hint names the one-line fix.
+func pingFailureDetail(serverURL string, err error, legacyTokenAuth bool) string {
+	detail := fmt.Sprintf("Ping to %s failed: %s", serverURL, err.Error())
+	var apiErr *client.APIError
+	if !legacyTokenAuth && errors.As(err, &apiErr) && apiErr.IsInvalidToken() {
+		detail += "\n\nIf the token is valid and your Technitium DNS Server is older than 15.0, " +
+			"the server does not accept the Authorization: Bearer header this provider sends " +
+			"by default. Set legacy_token_auth = true in the provider block (or " +
+			"TECHNITIUM_LEGACY_TOKEN_AUTH=true) to send the token as a query parameter instead."
+	}
+	return detail
+}
