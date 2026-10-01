@@ -154,12 +154,12 @@ func (c *Client) Login(ctx context.Context) error {
 	body := strings.NewReader(params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, body)
 	if err != nil {
-		return fmt.Errorf("creating login request: %w", err)
+		return redactRequestErr("/api/user/login", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("login request failed: %w", err)
+		return redactTransportErr("/api/user/login", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -168,7 +168,7 @@ func (c *Client) Login(ctx context.Context) error {
 		return fmt.Errorf("reading login response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected HTTP status %d on login: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("unexpected HTTP status %d on login: %s", resp.StatusCode, c.errorBody(respBody))
 	}
 
 	// The login response carries the token at the top level, outside the
@@ -287,6 +287,45 @@ func redactTransportErr(path string, err error) error {
 	return fmt.Errorf("request to %s failed: %w", path, err)
 }
 
+// redactRequestErr is the request-creation counterpart of redactTransportErr.
+// http.NewRequestWithContext fails with a *url.Error when the URL does not
+// parse -- a server_url with a stray space, for example -- and that error's
+// message embeds the raw URL, query string included. redactURL cannot parse
+// such a URL either, so the URL is replaced by its placeholder.
+func redactRequestErr(path string, err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("creating request to %s: %s %s: %w", path, urlErr.Op, redactURL(urlErr.URL), urlErr.Err)
+	}
+	return fmt.Errorf("creating request to %s: %w", path, err)
+}
+
+// maxErrorBodyBytes caps how much of a non-200 response body is quoted in an
+// error message.
+const maxErrorBodyBytes = 512
+
+// errorBody renders a non-200 response body for an error message. Reverse
+// proxies and WAFs routinely echo the request URI or form body in their error
+// pages, which in LegacyTokenAuth mode carries the API token (and, on login,
+// the password). Every credential the client holds is replaced -- raw and in
+// its URL-encoded forms -- before the body is truncated, so truncation can
+// never leave a partial credential behind.
+func (c *Client) errorBody(body []byte) string {
+	s := string(body)
+	for _, secret := range []string{c.token, c.password} {
+		if secret == "" {
+			continue
+		}
+		for _, form := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+			s = strings.ReplaceAll(s, form, "[REDACTED]")
+		}
+	}
+	if len(s) > maxErrorBodyBytes {
+		s = strings.ToValidUTF8(s[:maxErrorBodyBytes], "") + " [truncated]"
+	}
+	return s
+}
+
 // doGet performs a GET request to the Technitium API and returns the parsed response.
 // Most Technitium API endpoints use GET with query parameters, including mutations.
 //
@@ -307,7 +346,7 @@ func (c *Client) doGet(ctx context.Context, path string, params url.Values) (*AP
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating request to %s: %w", path, err)
+		return nil, redactRequestErr(path, err)
 	}
 	if !c.legacyTokenAuth {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -338,7 +377,7 @@ func (c *Client) doPost(ctx context.Context, path string, params url.Values) (*A
 	body := strings.NewReader(params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, body)
 	if err != nil {
-		return nil, fmt.Errorf("creating request to %s: %w", path, err)
+		return nil, redactRequestErr(path, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if !c.legacyTokenAuth {
@@ -361,7 +400,7 @@ func (c *Client) parseResponse(resp *http.Response) (*APIResponse, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected HTTP status %d: %s", resp.StatusCode, c.errorBody(body))
 	}
 
 	var apiResp APIResponse

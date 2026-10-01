@@ -36,7 +36,7 @@ func exportFilteredZones(ctx context.Context, c *Client, path string) ([]string,
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating request to %s: %w", path, err)
+		return nil, redactRequestErr(path, err)
 	}
 	if !c.legacyTokenAuth {
 		req.Header.Set("Authorization", "Bearer "+c.token)
