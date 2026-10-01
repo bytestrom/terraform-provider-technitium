@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dev
+// Copyright (c) 2026 bytestrom
 // SPDX-License-Identifier: MPL-2.0
 
 package client
